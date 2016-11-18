@@ -9,11 +9,13 @@
 package org.opendaylight.sfc.ofrenderer;
 
 import java.util.concurrent.ExecutionException;
+
 import org.opendaylight.controller.md.sal.binding.api.DataBroker;
 import org.opendaylight.controller.sal.binding.api.NotificationProviderService;
 import org.opendaylight.sfc.ofrenderer.listeners.SfcOfRendererDataListener;
 import org.opendaylight.sfc.ofrenderer.listeners.SfcOfRspDataListener;
 import org.opendaylight.sfc.ofrenderer.listeners.SfcOfSfgDataListener;
+import org.opendaylight.sfc.ofrenderer.openflow.SfcFlowStatePacketInHandler;
 import org.opendaylight.sfc.ofrenderer.openflow.SfcIpv4PacketInHandler;
 import org.opendaylight.sfc.ofrenderer.openflow.SfcOfFlowProgrammerImpl;
 import org.opendaylight.sfc.ofrenderer.openflow.SfcOfFlowProgrammerInterface;
@@ -46,6 +48,9 @@ public class SfcOfRenderer implements AutoCloseable {
     SfcOfSfgDataListener sfcOfSfgDataListener = null;
     SfcIpv4PacketInHandler packetInHandler = null;
     SfcOfRendererDataListener sfcOfRendererListener = null;
+    
+    //Flow-stateful hSFC
+    SfcFlowStatePacketInHandler flowStatePkInHandler = null;
 
     public SfcOfRenderer(DataBroker dataBroker, NotificationProviderService notificationService) {
         LOG.info("SfcOfRenderer starting the SfcOfRenderer plugin...");
@@ -59,6 +64,10 @@ public class SfcOfRenderer implements AutoCloseable {
 
         this.packetInHandler = new SfcIpv4PacketInHandler((SfcOfFlowProgrammerImpl) sfcOfFlowProgrammer);
         this.pktInRegistration = notificationService.registerNotificationListener(packetInHandler);
+        
+        //Flow-stateful hSFC
+        this.flowStatePkInHandler = new SfcFlowStatePacketInHandler((SfcOfFlowProgrammerImpl) sfcOfFlowProgrammer);
+        this.pktInRegistration = notificationService.registerNotificationListener(flowStatePkInHandler);
 
         LOG.info("SfcOfRenderer successfully started the SfcOfRenderer plugin");
     }

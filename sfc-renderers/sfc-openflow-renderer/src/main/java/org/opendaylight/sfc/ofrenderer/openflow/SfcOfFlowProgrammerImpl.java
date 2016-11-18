@@ -8,15 +8,18 @@
 
 package org.opendaylight.sfc.ofrenderer.openflow;
 
-import com.google.common.net.InetAddresses;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+
 import org.opendaylight.sfc.ofrenderer.sfg.GroupBucketInfo;
+import org.opendaylight.sfc.provider.api.SfcProviderServiceForwarderAPI;
 import org.opendaylight.sfc.sfc_ovs.provider.SfcOvsUtil;
 import org.opendaylight.sfc.util.openflow.SfcOpenflowUtils;
+import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.common.rev151017.SffName;
+import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.sff.rev140701.service.function.forwarders.ServiceFunctionForwarder;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.action.types.rev131112.action.action.GroupActionCaseBuilder;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.action.types.rev131112.action.action.group.action._case.GroupActionBuilder;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.action.types.rev131112.action.list.Action;
@@ -48,6 +51,8 @@ import org.opendaylight.yang.gen.v1.urn.opendaylight.model.match.types.rev131026
 import org.opendaylight.yang.gen.v1.urn.opendaylight.model.match.types.rev131026.vlan.match.fields.VlanIdBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.net.InetAddresses;
 
 /*
  * This class writes Openflow Flow Entries to the SFF once an SFF has been configured.
@@ -95,6 +100,13 @@ public class SfcOfFlowProgrammerImpl implements SfcOfFlowProgrammerInterface {
     public static final short TABLE_INDEX_NEXT_HOP = 4;
     public static final short TABLE_INDEX_TRANSPORT_EGRESS = 10;
     public static final short TABLE_INDEX_MAX_OFFSET = TABLE_INDEX_TRANSPORT_EGRESS;
+    
+    // flow-stateful
+    public static final short TABLE_INDEX_SAVE_FLOW_STATE = 5;    
+    public static final short TABLE_INDEX_RESTORE_FLOW_STATE = 6; 
+    public static final short TABLE_INDEX_AC_CHECK = 12; 
+    public static final short TABLE_INDEX_AC_ENFORCE = 11; 
+    public static final short TABLE_INDEX_CLASSIFIER_FLOW_STATEFUL = 8; 
 
     public static final int FLOW_PRIORITY_TRANSPORT_INGRESS = 250;
     public static final int FLOW_PRIORITY_ARP_TRANSPORT_INGRESS = 300;
@@ -1236,12 +1248,53 @@ public class SfcOfFlowProgrammerImpl implements SfcOfFlowProgrammerInterface {
 
         /* Need to set TUN_GPE_NP for VxLAN-gpe port */
         actionList.add(SfcOpenflowUtils.createActionNxLoadTunGpeNp(TUN_GPE_NP_NSH, order++));
+//		Flow-stateful hSFC
+        ServiceFunctionForwarder sff1 = SfcProviderServiceForwarderAPI.readServiceFunctionForwarder(new SffName("SFF1"));
+		String sff1NodeName = SfcOvsUtil.getOpenFlowNodeIdForSff(sff1);
+		FlowBuilder transportEgressFlow;
+        if (sffNodeName.compareTo(sff1NodeName)==0){
+        	ApplyActionsBuilder aab = new ApplyActionsBuilder();
+            aab.setAction(actionList);
+            short nextTable;
+            // FIXME: choose table
+            if ((nshNsi==255 && nshNsp<5000)||(nshNsi==254 && nshNsp>5000)){
+            	nextTable = TABLE_INDEX_AC_CHECK;
+            }else{
+            	nextTable = TABLE_INDEX_AC_ENFORCE;
+            }
+            GoToTableBuilder gotoTb = SfcOpenflowUtils.createActionGotoTable(getTableId(nextTable));
 
-        FlowBuilder transportEgressFlow =
-                configureTransportEgressFlow(match, actionList, outport, order,
-                        flowPriority,
-                        TRANSPORT_EGRESS_NSH_VXGPE_COOKIE);
+            InstructionBuilder gotoTbIb = new InstructionBuilder();
+            gotoTbIb.setInstruction(new GoToTableCaseBuilder().setGoToTable(gotoTb.build()).build());
+            gotoTbIb.setKey(new InstructionKey(1));
+            gotoTbIb.setOrder(1);
+
+            // Wrap our Apply Action in an Instruction
+            InstructionBuilder ib = new InstructionBuilder();
+            ib.setInstruction(new ApplyActionsCaseBuilder().setApplyActions(aab.build()).build());
+            ib.setKey(new InstructionKey(0));
+            ib.setOrder(0);
+
+            // Put our Instruction in a list of Instructions
+            InstructionsBuilder isb = new InstructionsBuilder();
+            List<Instruction> instructions = new ArrayList<Instruction>();
+            instructions.add(ib.build());
+            instructions.add(gotoTbIb.build());
+            isb.setInstruction(instructions);
+            transportEgressFlow=  SfcOpenflowUtils.createFlowBuilder(
+                    getTableId(TABLE_INDEX_TRANSPORT_EGRESS),
+                    flowPriority,
+                    "egress_to_ac_check", match, isb);
+        }else{
+        	
+        	transportEgressFlow =
+        			configureTransportEgressFlow(match, actionList, outport, order,
+        					flowPriority,
+        					TRANSPORT_EGRESS_NSH_VXGPE_COOKIE);
+        }
         sfcOfFlowWriter.writeFlow(flowRspId, sffNodeName, transportEgressFlow);
+        
+
     }
 
     /**
@@ -1564,4 +1617,276 @@ public class SfcOfFlowProgrammerImpl implements SfcOfFlowProgrammerInterface {
             return tableIndex;
         }
     }
+    
+    @Override
+	public void configureSaveFlowStateToClassifier(final String sffNodeName, MatchBuilder match, List<Action> actionList) {
+    	int order=0;
+    	InstructionsBuilder isb = new InstructionsBuilder();
+    	List<Instruction> instructions = new ArrayList<Instruction>();
+    	if (actionList.size()>0){
+    		ApplyActionsBuilder aab = new ApplyActionsBuilder();
+    		aab.setAction(actionList);
+    		// Wrap our Apply Action in an Instruction
+    		InstructionBuilder ib = new InstructionBuilder();
+    		ib.setInstruction(new ApplyActionsCaseBuilder().setApplyActions(aab.build()).build());
+    		ib.setKey(new InstructionKey(order));
+    		ib.setOrder(order++);
+    		instructions.add(ib.build());
+    	}
+
+        
+        GoToTableBuilder gotoAddNSH = SfcOpenflowUtils.createActionGotoTable(TABLE_INDEX_CLASSIFIER_FLOW_STATEFUL);
+        InstructionBuilder ibgtb = new InstructionBuilder();
+        ibgtb.setKey(new InstructionKey(order));
+        ibgtb.setOrder(order++);
+        ibgtb.setInstruction(new GoToTableCaseBuilder().setGoToTable(gotoAddNSH.build()).build());
+        instructions.add(ibgtb.build());
+        
+        isb.setInstruction(instructions);
+        // Create and configure the FlowBuilder
+        FlowBuilder matchState=  SfcOpenflowUtils.createFlowBuilder(
+                getTableId(TABLE_INDEX_SAVE_FLOW_STATE),
+                FLOW_PRIORITY_NEXT_HOP,
+                "check_sfc_state_flow", match, isb);
+        sfcOfFlowWriter.writeFlow(flowRspId, sffNodeName, matchState);
+       
+	}
+
+	@Override
+	public void configureFlowStateToController(final String sffNodeName) {
+		// Add our drop action to a list
+        List<Action> actionList = new ArrayList<Action>();
+        int order=0;
+        actionList.add(SfcOpenflowUtils.createActionPktIn(58, order++));
+        // Create an Apply Action
+        ApplyActionsBuilder aab = new ApplyActionsBuilder();
+        aab.setAction(actionList);
+
+        // Wrap our Apply Action in an Instruction
+        InstructionBuilder ib = new InstructionBuilder();
+        order = 0;
+        ib.setKey(new InstructionKey(order));
+        ib.setOrder(order++);
+        ib.setInstruction(new ApplyActionsCaseBuilder().setApplyActions(aab.build()).build());
+
+        List<Instruction> instructions = new ArrayList<Instruction>();
+        instructions.add(ib.build());
+
+        // Match any
+        MatchBuilder match = new MatchBuilder();
+        // Finish up the instructions
+        InstructionsBuilder isb = new InstructionsBuilder();
+        isb.setInstruction(instructions);
+        FlowBuilder flowb = SfcOpenflowUtils.createFlowBuilder(TABLE_INDEX_SAVE_FLOW_STATE, FLOW_PRIORITY_MATCH_ANY, "MatchAny", match, isb);
+        sfcOfFlowWriter.writeFlow(flowRspId, sffNodeName, flowb);
+		
+	}
+	
+    
+    @Override
+    public void configureSaveFlowState(final String sffNodeName, FlowState flowState, List<Action> actionList){
+    	MatchBuilder match = new MatchBuilder();
+//    	SfcOpenflowUtils.addMatchSrcIpv4(match, nshHeader.getSrcAddess().getValue(), 32);
+//    	SfcOpenflowUtils.addMatchDstIpv4(match, nshHeader.getDstAddess().getValue(), 32);
+    	SfcOpenflowUtils.addMatchNshNsp(match, flowState.getNshNsp());
+    	SfcOpenflowUtils.addMatchNshNsi(match, (short)flowState.getNshNsi());
+    	SfcOpenflowUtils.addMatchNshNsc1(match, flowState.getNshMetaC1());
+    	SfcOpenflowUtils.addMatchNshNsc2(match, flowState.getNshMetaC2());
+    	SfcOpenflowUtils.addMatchNshNsc3(match, flowState.getNshMetaC3());
+    	SfcOpenflowUtils.addMatchNshNsc4(match, flowState.getNshMetaC4());
+    	if (actionList ==  null) {
+    		actionList =  new ArrayList<Action>();
+    	}
+    	int order=0;
+    	Action setC4 = SfcOpenflowUtils.createActionNxSetNshc4((long)flowState.getFlowStateID(), order++);
+    	actionList.add(setC4);
+    	configureSaveFlowStateToClassifier(sffNodeName, match, actionList);
+
+	}
+    
+    @Override
+    public void configureRestoreFlowState(final String sffNodeName, FlowState flowState, List<Action> actionList){
+    	MatchBuilder match = new MatchBuilder();
+    	SfcOpenflowUtils.addMatchNshNsc4(match, flowState.getFlowStateID());
+    	int order=0;
+    	
+    	Action setNsp = SfcOpenflowUtils.createActionNxSetNsp((long)flowState.getNshNsp(), order++);
+    	Action setNsi = SfcOpenflowUtils.createActionNxSetNsi((short)(flowState.getNshNsi()-1), order++);
+    	Action setC1 = SfcOpenflowUtils.createActionNxSetNshc1((long)flowState.getNshMetaC1(), order++);
+    	Action setC2 = SfcOpenflowUtils.createActionNxSetNshc2((long)flowState.getNshMetaC2(), order++);
+    	Action setC3 = SfcOpenflowUtils.createActionNxSetNshc3((long)flowState.getNshMetaC3(), order++);
+    	Action setC4 = SfcOpenflowUtils.createActionNxSetNshc4((long)flowState.getNshMetaC4(), order++);
+    	
+    	List<Action> restoreActions = new ArrayList<Action>();
+    	restoreActions.add(setNsp);
+    	restoreActions.add(setNsi);
+    	restoreActions.add(setC1);
+    	restoreActions.add(setC2);
+    	restoreActions.add(setC3);
+    	restoreActions.add(setC4);
+    	
+    	if (actionList ==  null) {
+    		actionList =  new ArrayList<Action>();
+    	}
+    	int restoreActionSize = restoreActions.size();
+    	for (int i = 0; i < actionList.size(); i++) {
+    		ActionBuilder ab = new ActionBuilder(actionList.get(i));
+    		ab.setOrder(ab.getOrder()+restoreActionSize);
+    		ab.setKey(new ActionKey(ab.getOrder()));
+    		restoreActions.add(ab.build());
+		}
+    	
+       	// Create and configure the FlowBuilder
+        FlowBuilder restoreFlow=  SfcOpenflowUtils.createFlowBuilder(
+                getTableId(TABLE_INDEX_RESTORE_FLOW_STATE),
+                FLOW_PRIORITY_NEXT_HOP,
+                "restore_state_table_Flow", match, SfcOpenflowUtils.createInstructionsBuilder(SfcOpenflowUtils
+                        .createActionsInstructionBuilder(restoreActions.toArray(new Action[restoreActions.size()]))));
+        sfcOfFlowWriter.writeFlow(flowRspId, sffNodeName, restoreFlow);
+	}
+    
+    @Override
+    public void configureClassifierRestoreFlowState(final String sffNodeName, FlowState flowState){
+    	int order = 0;
+    	Action loadTunGpeNp = SfcOpenflowUtils.createActionNxLoadTunGpeNp(TUN_GPE_NP_NSH, order++);
+        Action setTunIpDst = SfcOpenflowUtils.createActionNxSetTunIpv4Dst("170.10.0.6", order++);
+        Action outPort = SfcOpenflowUtils.createActionOutPort(OutputPortValues.INPORT.toString(), order++);
+    	List<Action> actionList =  new ArrayList<>();
+    	actionList.add(loadTunGpeNp);
+    	actionList.add(setTunIpDst);
+    	actionList.add(outPort);
+    	configureRestoreFlowState(sffNodeName, flowState, actionList);
+    }
+
+	@Override
+	public void configureACCheckToController(String sffNodeName) {
+        List<Action> actionList = new ArrayList<Action>();
+        int order=0;
+        actionList.add(SfcOpenflowUtils.createActionPktIn(58, order++));
+        // Create an Apply Action
+        ApplyActionsBuilder aab = new ApplyActionsBuilder();
+        aab.setAction(actionList);
+
+        // Wrap our Apply Action in an Instruction
+        InstructionBuilder ib = new InstructionBuilder();
+        order = 0;
+        ib.setKey(new InstructionKey(order));
+        ib.setOrder(order++);
+        ib.setInstruction(new ApplyActionsCaseBuilder().setApplyActions(aab.build()).build());
+
+        List<Instruction> instructions = new ArrayList<Instruction>();
+        instructions.add(ib.build());
+
+        // Match any
+        MatchBuilder match = new MatchBuilder();
+        // Finish up the instructions
+        InstructionsBuilder isb = new InstructionsBuilder();
+        isb.setInstruction(instructions);
+        FlowBuilder flowb = SfcOpenflowUtils.createFlowBuilder(TABLE_INDEX_AC_CHECK, FLOW_PRIORITY_MATCH_ANY, "MatchAny", match, isb);
+        sfcOfFlowWriter.writeFlow(flowRspId, sffNodeName, flowb);
+		
+	}
+
+	@Override
+	public void configureACEnforceDrop(String sffNodeName) {
+//		int order=0;
+//        
+//        GoToTableBuilder gotoEgress = SfcOpenflowUtils.createActionGotoTable(TABLE_INDEX_AC_CHECK);
+//        InstructionBuilder ibgtb = new InstructionBuilder();
+//        ibgtb.setKey(new InstructionKey(order));
+//        ibgtb.setOrder(order++);
+//        ibgtb.setInstruction(new GoToTableCaseBuilder().setGoToTable(gotoEgress.build()).build());
+//        MatchBuilder match= new MatchBuilder(); 
+//        // Create and configure the FlowBuilder
+//        FlowBuilder matchState=  SfcOpenflowUtils.createFlowBuilder(
+//                getTableId(TABLE_INDEX_AC_ENFORCE),
+//                FLOW_PRIORITY_NEXT_HOP,
+//                "any_ac_enforce_flow", match, SfcOpenflowUtils.createInstructionsBuilder(ibgtb));
+//        sfcOfFlowWriter.writeFlow(flowRspId, sffNodeName, matchState);
+		configureTableMatchAnyDropFlow(TABLE_INDEX_AC_ENFORCE);
+		
+	}
+
+	@Override
+	public void configureACCheckFlow(String sffNodeName, FlowState flowState) {
+		MatchBuilder match = new MatchBuilder();
+    	SfcOpenflowUtils.addMatchNshNsp(match, flowState.getNshNsp());
+    	SfcOpenflowUtils.addMatchNshNsi(match, (short)flowState.getNshNsi());
+    	SfcOpenflowUtils.addMatchNshNsc1(match, flowState.getNshMetaC1());
+    	SfcOpenflowUtils.addMatchNshNsc2(match, flowState.getNshMetaC2());
+    	SfcOpenflowUtils.addMatchNshNsc3(match, flowState.getNshMetaC3());
+    	SfcOpenflowUtils.addMatchNshNsc4(match, flowState.getNshMetaC4());
+
+    	        
+        int order = 0;
+        List<Action> actionList = new ArrayList<Action>();
+        actionList.add(SfcOpenflowUtils.createActionNxSetNshc3((long)(flowState.getFlowStateID()), order++));
+        actionList.add(SfcOpenflowUtils.createActionNxSetNshc1(65536L, order++));
+        actionList.add(SfcOpenflowUtils.createActionOutPort(OutputPortValues.INPORT.toString(), order++));
+
+        ApplyActionsBuilder aab = new ApplyActionsBuilder();
+        aab.setAction(actionList);
+
+        int ibOrder = 0;
+        InstructionBuilder actionsIb = new InstructionBuilder();
+        actionsIb.setInstruction(new ApplyActionsCaseBuilder().setApplyActions(aab.build()).build());
+        actionsIb.setKey(new InstructionKey(ibOrder));
+        actionsIb.setOrder(ibOrder++);
+
+        
+        // Create and configure the FlowBuilder
+        FlowBuilder matchState=  SfcOpenflowUtils.createFlowBuilder(
+                getTableId(TABLE_INDEX_AC_CHECK),
+                FLOW_PRIORITY_NEXT_HOP,
+                "check_ac_flow", match, SfcOpenflowUtils.createInstructionsBuilder(actionsIb));
+        sfcOfFlowWriter.writeFlow(flowRspId, sffNodeName, matchState);
+	}
+
+	@Override
+	public void configureACEnforceFlow(String sffNodeName, FlowState flowState) {
+		MatchBuilder match = new MatchBuilder();
+    	SfcOpenflowUtils.addMatchNshNsc3(match, flowState.getFlowStateID());
+    	int order=0;
+    	
+    	Action setC1 = SfcOpenflowUtils.createActionNxSetNshc1((long)flowState.getNshMetaC1(), order++);
+    	Action setC2 = SfcOpenflowUtils.createActionNxSetNshc2((long)flowState.getNshMetaC2(), order++);
+    	Action setC3 = SfcOpenflowUtils.createActionNxSetNshc3((long)flowState.getNshMetaC3(), order++);
+    	Action setC4 = SfcOpenflowUtils.createActionNxSetNshc4((long)flowState.getNshMetaC4(), order++);
+    	
+    	List<Action> restoreActions = new ArrayList<Action>();
+    	restoreActions.add(setC1);
+    	restoreActions.add(setC2);
+    	restoreActions.add(setC3);
+    	restoreActions.add(setC4);
+    	restoreActions.add(SfcOpenflowUtils.createActionOutPort(OutputPortValues.INPORT.toString(), order++));
+    	ApplyActionsBuilder aab = new ApplyActionsBuilder();
+        aab.setAction(restoreActions);
+
+//        GoToTableBuilder gotoTb = SfcOpenflowUtils.createActionGotoTable(getTableId(TABLE_INDEX_AC_CHECK));
+//
+//        InstructionBuilder gotoTbIb = new InstructionBuilder();
+//        gotoTbIb.setInstruction(new GoToTableCaseBuilder().setGoToTable(gotoTb.build()).build());
+//        gotoTbIb.setKey(new InstructionKey(1));
+//        gotoTbIb.setOrder(1);
+
+        // Wrap our Apply Action in an Instruction
+        InstructionBuilder ib = new InstructionBuilder();
+        ib.setInstruction(new ApplyActionsCaseBuilder().setApplyActions(aab.build()).build());
+        ib.setKey(new InstructionKey(0));
+        ib.setOrder(0);
+
+        // Put our Instruction in a list of Instructions
+        InstructionsBuilder isb = new InstructionsBuilder();
+        List<Instruction> instructions = new ArrayList<Instruction>();
+        instructions.add(ib.build());
+//        instructions.add(gotoTbIb.build());
+        isb.setInstruction(instructions);
+    	
+       	// Create and configure the FlowBuilder
+        FlowBuilder restoreFlow=  SfcOpenflowUtils.createFlowBuilder(
+                getTableId(TABLE_INDEX_AC_ENFORCE),
+                FLOW_PRIORITY_NEXT_HOP,
+                "ac_enforce_table_Flow", match, isb);
+        sfcOfFlowWriter.writeFlow(flowRspId, sffNodeName, restoreFlow);
+	}
 }

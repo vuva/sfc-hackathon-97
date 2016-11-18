@@ -10,6 +10,7 @@ package org.opendaylight.sfc.scfofrenderer;
 
 import java.util.ArrayList;
 import java.util.List;
+
 import org.opendaylight.sfc.util.openflow.SfcOpenflowUtils;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.action.types.rev131112.action.list.Action;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.inventory.rev130819.FlowId;
@@ -20,7 +21,9 @@ import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.Output
 import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.flow.InstructionsBuilder;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.flow.Match;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.flow.MatchBuilder;
+import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.instruction.instruction.ApplyActionsCaseBuilder;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.instruction.instruction.GoToTableCaseBuilder;
+import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.instruction.instruction.apply.actions._case.ApplyActionsBuilder;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.instruction.instruction.go.to.table._case.GoToTableBuilder;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.instruction.list.Instruction;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.instruction.list.InstructionBuilder;
@@ -29,6 +32,9 @@ import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.instru
 public class SfcScfOfUtils {
     private static final short TABLE_INDEX_CLASSIFIER = 0;
     private static final short TABLE_INDEX_INGRESS_TRANSPORT = 1;
+    private static final short TABLE_INDEX_SAVE_FLOW_STATE = 5;
+    private static final short TABLE_INDEX_RESTORE_FLOW_STATE = 6;
+    private static final short TABLE_INDEX_CLASSIFIER_FLOW_STATEFUL = 8;
 
     private static final int FLOW_PRIORITY_CLASSIFIER = 1000;
     private static final int FLOW_PRIORITY_MATCH_ANY = 5;
@@ -109,6 +115,7 @@ public class SfcScfOfUtils {
         } else {
             out = SfcOpenflowUtils.createActionOutPort(outPort.intValue(), order++);
         }
+//        out=  SfcOpenflowUtils.createActionPktIn(58, order++);
 
         FlowBuilder flowb = new FlowBuilder();
         flowb.setId(new FlowId(flowKey))
@@ -228,4 +235,119 @@ public class SfcScfOfUtils {
        return SfcOpenflowUtils.removeFlowFromDataStore(nodeName, new TableKey(TABLE_INDEX_CLASSIFIER),
                                                             new FlowKey(new FlowId(flowKey.toString())));
    }
+    
+    public static boolean createClassifierGoToSaveState(String nodeName, String flowKey, Match match, SfcNshHeader sfcNshHeader,
+            Long outPort) {
+        int order = 0;
+
+        if ((nodeName == null) || (flowKey == null) || (sfcNshHeader == null) || (sfcNshHeader.getVxlanIpDst()==null)) {
+            return false;
+        }
+
+        GoToTableBuilder gotoIngress = SfcOpenflowUtils.createActionGotoTable(TABLE_INDEX_SAVE_FLOW_STATE);
+
+        InstructionBuilder ib = new InstructionBuilder();
+        ib.setKey(new InstructionKey(order));
+        ib.setOrder(order++);
+        ib.setInstruction(new GoToTableCaseBuilder().setGoToTable(gotoIngress.build()).build());
+
+        InstructionsBuilder isb = SfcOpenflowUtils.createInstructionsBuilder(ib);
+        MatchBuilder mb = new MatchBuilder(match);
+        FlowBuilder fb = SfcOpenflowUtils.createFlowBuilder(TABLE_INDEX_CLASSIFIER, FLOW_PRIORITY_CLASSIFIER, "MatchAny",
+                mb, isb);
+        return SfcOpenflowUtils.writeFlowToDataStore(nodeName, fb);
+
+    }
+    
+    public static boolean createClassifierOutFlowStateful(String nodeName, String flowKey, Match match, SfcNshHeader sfcNshHeader,
+            Long outPort) {
+    	int order = 0;
+
+        if ((nodeName == null) || (flowKey == null) || (sfcNshHeader == null) || (sfcNshHeader.getVxlanIpDst()==null)) {
+            return false;
+        }
+
+        String dstIp = sfcNshHeader.getVxlanIpDst().getValue();
+        Action loadNshMdtype = SfcOpenflowUtils.createActionNxLoadNshMdtype(NSH_MDTYPE_ONE, order++);
+        Action loadNshNp = SfcOpenflowUtils.createActionNxLoadNshNp(NSH_NP_ETH, order++);
+        Action setNsp = SfcOpenflowUtils.createActionNxSetNsp(sfcNshHeader.getNshNsp(), order++);
+        Action setNsi = SfcOpenflowUtils.createActionNxSetNsi(sfcNshHeader.getNshStartNsi(), order++);
+        Action setC1 = SfcOpenflowUtils.createActionNxSetNshc1(sfcNshHeader.getNshMetaC1(), order++);
+        Action setC2 = SfcOpenflowUtils.createActionNxSetNshc2(sfcNshHeader.getNshMetaC2(), order++);
+        Action setC3 = SfcOpenflowUtils.createActionNxSetNshc3(sfcNshHeader.getNshMetaC3(), order++);
+//        Action setC4 = SfcOpenflowUtils.createActionNxSetNshc4(sfcNshHeader.getNshMetaC4(), order++);
+        Action loadTunGpeNp = SfcOpenflowUtils.createActionNxLoadTunGpeNp(TUN_GPE_NP_NSH, order++);
+        Action setTunIpDst = SfcOpenflowUtils.createActionNxSetTunIpv4Dst(dstIp, order++);
+
+        Action out = null;
+        if (outPort == null) {
+            out = SfcOpenflowUtils.createActionOutPort(OutputPortValues.INPORT.toString(), order++);
+        } else {
+            out = SfcOpenflowUtils.createActionOutPort(outPort.intValue(), order++);
+        }
+        //TODO: right now only work with INPORT
+        out = SfcOpenflowUtils.createActionOutPort(OutputPortValues.INPORT.toString(), order++);
+        
+        FlowBuilder flowb = new FlowBuilder();
+        flowb.setId(new FlowId(flowKey))
+            .setTableId(TABLE_INDEX_CLASSIFIER_FLOW_STATEFUL)
+            .setKey(new FlowKey(new FlowId(flowKey)))
+            .setPriority(Integer.valueOf(FLOW_PRIORITY_CLASSIFIER-1))
+            .setMatch(match)
+            .setInstructions(SfcOpenflowUtils.createInstructionsBuilder(SfcOpenflowUtils
+                .createActionsInstructionBuilder(loadNshMdtype, loadNshNp, setNsp, setNsi, setC1, setC2, setC3, loadTunGpeNp, setTunIpDst, out))
+                .build());
+        return SfcOpenflowUtils.writeFlowToDataStore(nodeName, flowb);
+    }
+    
+    public static boolean createClassifierInFlowStateful(String nodeName, String flowKey, SfcNshHeader sfcNshHeader, Long outPort) {
+        int order = 0;
+
+        if ((nodeName == null) || (flowKey == null) || (sfcNshHeader == null) || (sfcNshHeader.getVxlanIpDst()==null)) {
+            return false;
+        }
+
+        MatchBuilder mb = new MatchBuilder();
+
+        SfcOpenflowUtils.addMatchNshNsp(mb, sfcNshHeader.getNshNsp());
+        SfcOpenflowUtils.addMatchNshNsi(mb, sfcNshHeader.getNshEndNsi());
+
+        GoToTableBuilder gotoIngress = SfcOpenflowUtils.createActionGotoTable(TABLE_INDEX_RESTORE_FLOW_STATE);
+
+        InstructionBuilder ib = new InstructionBuilder();
+        ib.setKey(new InstructionKey(order));
+        ib.setOrder(order++);
+        ib.setInstruction(new GoToTableCaseBuilder().setGoToTable(gotoIngress.build()).build());
+
+        InstructionsBuilder isb = SfcOpenflowUtils.createInstructionsBuilder(ib);
+
+        FlowBuilder flowb = new FlowBuilder();
+        flowb.setId(new FlowId(flowKey))
+            .setTableId(TABLE_INDEX_CLASSIFIER)
+            .setKey(new FlowKey(new FlowId(flowKey)))
+            .setPriority(Integer.valueOf(FLOW_PRIORITY_CLASSIFIER))
+            .setMatch(mb.build())
+            .setInstructions(isb.build());
+        return SfcOpenflowUtils.writeFlowToDataStore(nodeName, flowb);
+    }
+    
+    public static boolean initClassifierSaveFlowStateTable(String nodeName) {
+    	int order=0;
+        
+        InstructionsBuilder isb = SfcOpenflowUtils.createInstructionsBuilder(SfcOpenflowUtils.createActionsInstructionBuilder(SfcOpenflowUtils.createActionPktIn(58, order++)));
+        // Match any
+        MatchBuilder match = new MatchBuilder();
+        FlowBuilder flowb = SfcOpenflowUtils.createFlowBuilder(TABLE_INDEX_SAVE_FLOW_STATE, FLOW_PRIORITY_MATCH_ANY, "MatchAny", match, isb);
+        return SfcOpenflowUtils.writeFlowToDataStore(nodeName, flowb);
+    }
+    
+    public static boolean initClassifierRestoreFlowStateTable(String nodeName) {
+    	int order=0;
+        
+        InstructionsBuilder isb = SfcOpenflowUtils.createInstructionsBuilder(SfcOpenflowUtils.createActionsInstructionBuilder(SfcOpenflowUtils.createActionDropPacket(order++)));
+        // Match any
+        MatchBuilder match = new MatchBuilder();
+        FlowBuilder flowb = SfcOpenflowUtils.createFlowBuilder(TABLE_INDEX_RESTORE_FLOW_STATE, FLOW_PRIORITY_MATCH_ANY, "MatchAny", match, isb);
+        return SfcOpenflowUtils.writeFlowToDataStore(nodeName, flowb);
+    }
 }

@@ -12,9 +12,13 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+
+import org.opendaylight.sfc.ofrenderer.openflow.SfcOfFlowProgrammerImpl;
 import org.opendaylight.sfc.ofrenderer.openflow.SfcOfFlowProgrammerInterface;
 import org.opendaylight.sfc.ofrenderer.utils.SfcOfBaseProviderUtils;
 import org.opendaylight.sfc.ofrenderer.utils.SfcSynchronizer;
+import org.opendaylight.sfc.provider.api.SfcProviderServiceForwarderAPI;
+import org.opendaylight.sfc.sfc_ovs.provider.SfcOvsUtil;
 import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.common.rev151017.SfName;
 import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.common.rev151017.SffName;
 import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.rsp.rev140701.rendered.service.paths.RenderedServicePath;
@@ -419,6 +423,15 @@ public class SfcOfRspProcessor {
             this.sfcOfFlowProgrammer.configurePathMapperAclTableMatchAny(sffNodeName);
             this.sfcOfFlowProgrammer.configureNextHopTableMatchAny(sffNodeName);
             this.sfcOfFlowProgrammer.configureTransportEgressTableMatchAny(sffNodeName);
+            
+            // Flow-stateful hSFC
+            this.sfcOfFlowProgrammer.configureFlowStateToController(sffNodeName);
+            ServiceFunctionForwarder sff1 = SfcProviderServiceForwarderAPI.readServiceFunctionForwarder(new SffName("SFF1"));
+			String sff1NodeName = SfcOvsUtil.getOpenFlowNodeIdForSff(sff1);
+            if (sffNodeName.compareTo(sff1NodeName)==0){
+            	this.sfcOfFlowProgrammer.configureACCheckToController(sff1NodeName);
+            	this.sfcOfFlowProgrammer.configureACEnforceDrop(sff1NodeName);
+            }
 
             setSffInitialized(sffNodeId, true);
         }

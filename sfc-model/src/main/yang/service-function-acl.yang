@@ -33,15 +33,13 @@ module service-function-acl {
      }
     }
   }
-
   augment "/ietf-acl:access-lists/ietf-acl:acl/ietf-acl:access-list-entries/ietf-acl:ace/ietf-acl:matches" {
-    description "Level 7 match criteria, based on IPFIX applicationIds";
-    leaf-list application-id {
-      description "Application Identifier";
-      type ipfix-application-information:application-id-ref;
-    }
-  }
-
+	    description "Level 7 match criteria, based on IPFIX applicationIds";
+	    leaf-list application-id {
+	      description "Application Identifier";
+	      type ipfix-application-information:application-id-ref;
+	    }
+	  }
   container access-lists-state {
     description
       "This container hold operational state for all access lists";

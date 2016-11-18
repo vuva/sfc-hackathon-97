@@ -11,7 +11,10 @@ package org.opendaylight.sfc.ofrenderer.openflow;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+
 import org.opendaylight.sfc.ofrenderer.sfg.GroupBucketInfo;
+import org.opendaylight.yang.gen.v1.urn.opendaylight.action.types.rev131112.action.list.Action;
+import org.opendaylight.yang.gen.v1.urn.opendaylight.flow.types.rev131026.flow.MatchBuilder;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.inventory.rev130819.NodeId;
 
 
@@ -149,5 +152,25 @@ public interface SfcOfFlowProgrammerInterface {
     // group configuration
     public void configureGroup(final String sffNodeName, final String openflowNodeId, final String sfgName,
             final long sfgId, int groupType, List<GroupBucketInfo> bucketInfos, final boolean isAddGroup);
+    
+    // flow-stateful
+    public void configureFlowStateToController(String sffNodeName);
 
+    public void configureSaveFlowStateToClassifier(final String sffNodeName, MatchBuilder match, List<Action> actionList);
+	
+    public void configureSaveFlowState(final String sffNodeName, FlowState flowState, List<Action> actionList);
+	
+    public void configureRestoreFlowState(final String sffNodeName, FlowState flowState, List<Action> actionList);
+
+    public void configureClassifierRestoreFlowState(final String sffNodeName, FlowState flowState);
+    
+    public void configureACCheckToController(final String sffNodeName);
+    
+    public void configureACEnforceDrop(final String sffNodeName);
+    
+    public void configureACCheckFlow(final String sffNodeName, FlowState flowState);
+    
+    public void configureACEnforceFlow(final String sffNodeName, FlowState flowState);
+    
+    
 }

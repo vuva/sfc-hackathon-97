@@ -8,15 +8,22 @@
 
 package org.opendaylight.sfc.ofrenderer.openflow;
 
-import java.math.BigInteger;
 import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
-import org.opendaylight.yang.gen.v1.urn.opendaylight.inventory.rev130819.nodes.Node;
-import org.opendaylight.yang.gen.v1.urn.opendaylight.inventory.rev130819.nodes.NodeKey;
-import org.opendaylight.yang.gen.v1.urn.opendaylight.model.match.types.rev131026.match.Metadata;
+
+import org.opendaylight.sfc.provider.api.SfcProviderServiceClassifierAPI;
+import org.opendaylight.sfc.provider.api.SfcProviderServiceForwarderAPI;
+import org.opendaylight.sfc.sfc_ovs.provider.SfcOvsUtil;
+import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.common.rev151017.SffName;
+import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.scf.rev140701.service.function.classifiers.ServiceFunctionClassifier;
+import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.scf.rev140701.service.function.classifiers.service.function.classifier.SclServiceFunctionForwarder;
+import org.opendaylight.yang.gen.v1.urn.cisco.params.xml.ns.yang.sfc.sff.rev140701.service.function.forwarders.ServiceFunctionForwarder;
+import org.opendaylight.yang.gen.v1.urn.ietf.params.xml.ns.yang.ietf.inet.types.rev130715.Ipv4Address;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.packet.service.rev130709.PacketProcessingListener;
 import org.opendaylight.yang.gen.v1.urn.opendaylight.packet.service.rev130709.PacketReceived;
 import org.slf4j.Logger;
@@ -39,14 +46,16 @@ import org.slf4j.LoggerFactory;
  * a separate connection with the server (send TCP Syn to server).
  */
 
-public class SfcIpv4PacketInHandler implements PacketProcessingListener, AutoCloseable {
+public class SfcFlowStatePacketInHandler implements PacketProcessingListener, AutoCloseable {
 
-    private final static Logger LOG = LoggerFactory.getLogger(SfcIpv4PacketInHandler.class);
+    private final static Logger LOG = LoggerFactory.getLogger(SfcFlowStatePacketInHandler.class);
     private final static int PACKET_OFFSET_ETHERTYPE = 12;
-    private final static int PACKET_OFFSET_IP = 14;
+    private final static int PACKET_OFFSET_IP = 52;
     private final static int PACKET_OFFSET_IP_SRC = PACKET_OFFSET_IP+12;
     private final static int PACKET_OFFSET_IP_DST = PACKET_OFFSET_IP+16;
+    private final static int PACKET_NSH_OFSET = 14;
     public  final static int ETHERTYPE_IPV4 = 0x0800;
+    public  final static int ETHERTYPE_SFC = 0x894f;
     private final static int DEFAULT_MAX_BUFFER_TIME = 60000; // 60 milliseconds
     private final static int DEFAULT_PACKET_COUNT_PURGE = 100;
 
@@ -56,7 +65,7 @@ public class SfcIpv4PacketInHandler implements PacketProcessingListener, AutoClo
     private int packetCountPurge;
     private int packetCount;
 
-    public SfcIpv4PacketInHandler(SfcOfFlowProgrammerImpl flowProgrammer) {
+    public SfcFlowStatePacketInHandler(SfcOfFlowProgrammerImpl flowProgrammer) {
         this.flowProgrammer = flowProgrammer;
         pktInBuffer = new HashMap<String, Long>();
         maxBufferTime = DEFAULT_MAX_BUFFER_TIME;
@@ -102,83 +111,133 @@ public class SfcIpv4PacketInHandler implements PacketProcessingListener, AutoClo
         }
 
         // Make sure the PacketIn is due to our Classification table pktInAction
-        if(!this.flowProgrammer.compareClassificationTableCookie(packetIn.getFlowCookie())) {
-            LOG.debug("SfcIpv4PacketInHandler discarding packet by Flow Cookie");
-            return;
-        }
+//        if(!this.flowProgrammer.compareClassificationTableCookie(packetIn.getFlowCookie())) {
+//            LOG.debug("SfcFlowStatePacketInHandler discarding packet by Flow Cookie");
+//            return;
+//        }
 
         // TODO figure out how to get the IDataPacketService which will parse the packet for us
 
         final byte[] rawPacket = packetIn.getPayload();
 
-//         Get the EtherType and check that its an IP packet
-        if(getEtherType(rawPacket) != ETHERTYPE_IPV4) {
-            LOG.debug("SfcIpv4PacketInHandler discarding NON-IPv4");
+        // Get the EtherType and check that its an IP packet
+        if(getEtherType(rawPacket) != ETHERTYPE_SFC) {
+            LOG.debug("SfcFlowStatePacketInHandler discarding NON-IPv4");
             return;
         }
 
         // Get the SrcIp and DstIp Addresses
         String pktSrcIpStr = getSrcIpStr(rawPacket);
         if(pktSrcIpStr == null) {
-            LOG.error("SfcIpv4PacketInHandler Cant get Src IP address, discarding packet");
+            LOG.error("SfcFlowStatePacketInHandler Cant get Src IP address, discarding packet");
             return;
         }
 
         String pktDstIpStr = getDstIpStr(rawPacket);
         if(pktDstIpStr == null) {
-            LOG.error("SfcIpv4PacketInHandler Cant get Src IP address, discarding packet");
+            LOG.error("SfcFlowStatePacketInHandler Cant get Src IP address, discarding packet");
             return;
         }
 
         // Since all packets sent to SF are PktIn, only need to handle the first one
         // In OpenFlow 1.5 we'll be able to do the PktIn on TCP Syn only
-        if(bufferPktIn(pktSrcIpStr, pktDstIpStr)) {
-            LOG.info("SfcIpv4PacketInHandler PacketIn buffered");
-            return;
-        }
-        LOG.info("SfcIpv4PacketInHandler PacketIn NOT buffered");
+//        if(bufferPktIn(pktSrcIpStr, pktDstIpStr)) {
+//            LOG.info("SfcFlowStatePacketInHandler PacketIn buffered");
+//            return;
+//        }
+//        LOG.info("SfcFlowStatePacketInHandler PacketIn NOT buffered");
 
         // Get the metadata
         if(packetIn.getMatch() == null) {
-            LOG.error("SfcIpv4PacketInHandler Cant get packet flow match");
-            return;
-        }
-        if(packetIn.getMatch().getMetadata() == null) {
-            LOG.error("SfcIpv4PacketInHandler Cant get packet flow match metadata");
+            LOG.error("SfcFlowStatePacketInHandler Cant get packet flow match");
             return;
         }
 
-        Metadata pktMatchMetadata = packetIn.getMatch().getMetadata();
-        BigInteger metadata = pktMatchMetadata.getMetadata();
-
-        short ulPathId = metadata.shortValue();
+//        if(packetIn.getMatch().getMetadata() == null) {
+//            LOG.error("SfcFlowStatePacketInHandler Cant get packet flow match metadata");
+//            return;
+//        }
+//
+//        Metadata pktMatchMetadata = packetIn.getMatch().getMetadata();
+//        BigInteger metadata = pktMatchMetadata.getMetadata();
+//
+//        short ulPathId = metadata.shortValue();
         // Assuming the RSP is symmetric
-        short dlPathId = (short) (ulPathId + 1);
-
-        LOG.info("SfcIpv4PacketInHandler Src IP [{}] Dst IP [{}] ulPathId [{}] dlPathId [{}]",
-                pktSrcIpStr, pktDstIpStr, ulPathId, dlPathId);
+//        short dlPathId = (short) (ulPathId + 1);
+//
+//        LOG.info("SfcFlowStatePacketInHandler Src IP [{}] Dst IP [{}] ulPathId [{}] dlPathId [{}]",
+//                pktSrcIpStr, pktDstIpStr, ulPathId, dlPathId);
+        
+        FlowState flowState = getNshHeader(rawPacket);
+        if(flowState == null) {
+            LOG.error("SfcFlowStatePacketInHandler Cant get NSH Header");
+            return;
+        }
+        flowState.setSrcAddess(Ipv4Address.getDefaultInstance(pktSrcIpStr));
+        flowState.setDstAddess(Ipv4Address.getDefaultInstance(pktDstIpStr));
+        //Generate random flowstate ID
+        Random rand = new Random();
+        int flowStateID = rand.nextInt(50) + 1;
+        flowState.setFlowStateID(flowStateID);
+        
+        if (packetIn.getTableId().getValue() == SfcOfFlowProgrammerImpl.TABLE_INDEX_AC_CHECK) {
+			ServiceFunctionForwarder sff = SfcProviderServiceForwarderAPI.readServiceFunctionForwarder(new SffName("SFF1"));
+			String sffNodeName = SfcOvsUtil.getOpenFlowNodeIdForSff(sff);
+			this.flowProgrammer.configureACCheckFlow(sffNodeName, flowState);
+			this.flowProgrammer.configureACEnforceFlow(sffNodeName, flowState);
+			
+		} else if (packetIn.getTableId().getValue() == SfcOfFlowProgrammerImpl.TABLE_INDEX_SAVE_FLOW_STATE){
+			ServiceFunctionClassifier classifier1= SfcProviderServiceClassifierAPI.readServiceClassifier("Classifier1");
+			for (SclServiceFunctionForwarder cf1sff : classifier1.getSclServiceFunctionForwarder()) {
+				ServiceFunctionForwarder sff = SfcProviderServiceForwarderAPI.readServiceFunctionForwarder(new SffName(cf1sff.getName()));
+				if (sff == null) {
+					LOG.error("createdServiceFunctionClassifier: sff is null\n");
+					continue;
+				}
+				String nodeName = SfcOvsUtil.getOpenFlowNodeIdForSff(sff);
+				if (nodeName!=null){
+					this.flowProgrammer.configureSaveFlowState(nodeName, flowState, null);
+				}
+			}
+			
+			ServiceFunctionClassifier classifier2= SfcProviderServiceClassifierAPI.readServiceClassifier("Classifier2");
+			for (SclServiceFunctionForwarder cf1sff : classifier2.getSclServiceFunctionForwarder()) {
+				ServiceFunctionForwarder sff = SfcProviderServiceForwarderAPI.readServiceFunctionForwarder(new SffName(cf1sff.getName()));
+				if (sff == null) {
+					LOG.error("createdServiceFunctionClassifier: sff is null\n");
+					continue;
+				}
+				String nodeName = SfcOvsUtil.getOpenFlowNodeIdForSff(sff);
+				if (nodeName!=null){
+					this.flowProgrammer.configureClassifierRestoreFlowState(nodeName, flowState);
+				}
+			}
+		}else{
+			return;
+		}
+        this.flowProgrammer.flushFlows();
 
         // Get the Node name, by getting the following
         // - Ingress nodeConnectorRef
         // - instanceID for the Node in the tree above us
         // - instance identifier for the nodeConnectorRef
-        final String nodeName =
-                packetIn.getIngress()
-                .getValue()
-                .firstKeyOf(Node.class, NodeKey.class)
-                .getId().getValue();
+//        final String nodeName =
+//                packetIn.getIngress()
+//                .getValue()
+//                .firstKeyOf(Node.class, NodeKey.class)
+//                .getId().getValue();
 
         // Configure the uplink packet
-        if(ulPathId >= 0) {
-            this.flowProgrammer.setFlowRspId(new Long(ulPathId));
-            this.flowProgrammer.configurePathMapperAclFlow(nodeName, pktSrcIpStr, pktDstIpStr, ulPathId);
-        }
+//        if(ulPathId >= 0) {
+//            this.flowProgrammer.setFlowRspId(new Long(ulPathId));
+//            this.flowProgrammer.configurePathMapperAclFlow(nodeName, pktSrcIpStr, pktDstIpStr, ulPathId);
+//        }
 
         // Configure the downlink packet
-        if(dlPathId >= 0) {
-            this.flowProgrammer.setFlowRspId(new Long(dlPathId));
-            this.flowProgrammer.configurePathMapperAclFlow(nodeName, pktDstIpStr, pktSrcIpStr, dlPathId);
-        }
+//        if(dlPathId >= 0) {
+//            this.flowProgrammer.setFlowRspId(new Long(dlPathId));
+//            this.flowProgrammer.configurePathMapperAclFlow(nodeName, pktDstIpStr, pktSrcIpStr, dlPathId);
+//        }
     }
 
     @Override
@@ -191,9 +250,9 @@ public class SfcIpv4PacketInHandler implements PacketProcessingListener, AutoClo
      * @param rawPacket
      * @return etherType
      */
-    private short getEtherType(final byte[] rawPacket) {
+    private int getEtherType(final byte[] rawPacket) {
         final byte[] etherTypeBytes = Arrays.copyOfRange(rawPacket, PACKET_OFFSET_ETHERTYPE, PACKET_OFFSET_ETHERTYPE+2);
-        return packShort(etherTypeBytes);
+        return packInt(etherTypeBytes);
     }
 
     /**
@@ -231,6 +290,24 @@ public class SfcIpv4PacketInHandler implements PacketProcessingListener, AutoClo
 
         return pktDstIpStr;
     }
+    
+    private FlowState getNshHeader(final byte[] rawPacket) {
+        final byte[] nspBytes = Arrays.copyOfRange(rawPacket, PACKET_NSH_OFSET+4, PACKET_NSH_OFSET+7);
+        final byte[] nsiBytes = Arrays.copyOfRange(rawPacket, PACKET_NSH_OFSET+7, PACKET_NSH_OFSET+8);
+        final byte[] mch1Bytes = Arrays.copyOfRange(rawPacket, PACKET_NSH_OFSET+8, PACKET_NSH_OFSET+12);
+        final byte[] mch2Bytes = Arrays.copyOfRange(rawPacket, PACKET_NSH_OFSET+12, PACKET_NSH_OFSET+16);
+        final byte[] mch3Bytes = Arrays.copyOfRange(rawPacket, PACKET_NSH_OFSET+16, PACKET_NSH_OFSET+20);
+        final byte[] mch4Bytes = Arrays.copyOfRange(rawPacket, PACKET_NSH_OFSET+20, PACKET_NSH_OFSET+24);
+        FlowState  nshHeader= null;
+        try {
+        	nshHeader =  new FlowState(null, null, packInt(nspBytes), packInt(nsiBytes), 
+        			packInt(mch1Bytes), packInt(mch2Bytes), packInt(mch3Bytes),packInt(mch4Bytes), null);
+        } catch(Exception e) {
+            LOG.error("sException getting NSH header [{}]", e.getMessage(), e);
+        }
+
+        return nshHeader;
+    }
 
     /**
      * Simple internal utility function to convert from a 2-byte array to a short
@@ -238,9 +315,9 @@ public class SfcIpv4PacketInHandler implements PacketProcessingListener, AutoClo
      * @param bytes
      * @return the bytes packed into a short
      */
-    private short packShort(byte[] bytes) {
-        short val = (short) 0;
-        for (int i = 0; i < 2; i++) {
+    private int packInt(byte[] bytes) {
+        int val = (int) 0;
+        for (int i = 0; i < bytes.length; i++) {
           val <<= 8;
           val |= bytes[i] & 0xff;
         }
@@ -293,4 +370,6 @@ public class SfcIpv4PacketInHandler implements PacketProcessingListener, AutoClo
             }
         }
     }
+    
+    
 }

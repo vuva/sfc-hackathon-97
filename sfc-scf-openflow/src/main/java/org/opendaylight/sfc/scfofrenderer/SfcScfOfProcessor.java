@@ -10,6 +10,7 @@ package org.opendaylight.sfc.scfofrenderer;
 
 
 import java.util.List;
+
 import org.opendaylight.sfc.provider.api.SfcProviderAclAPI;
 import org.opendaylight.sfc.provider.api.SfcProviderServiceForwarderAPI;
 import org.opendaylight.sfc.sfc_ovs.provider.SfcOvsUtil;
@@ -176,10 +177,43 @@ public class SfcScfOfProcessor {
                     LOG.error("createdServiceFunctionClassifier: nsh is null\n");
                     continue;
                 }
-
+                
+                
+                //Flow-stateful
+//                Ace1 ace1 = ace.getAugmentation(Ace1.class);
+//                boolean isSubDomain = false;
+//                if (ace1 == null) {
+//                    LOG.error("createdServiceFunctionClassifier: ace augment is null\n");
+//                    continue;
+//                }else{
+//                    isSubDomain = ace1.isSubDomain();
+//                }
+                if (false){
+                	if (!SfcScfOfUtils.createClassifierOutFlowStateful(nodeName, "classifierStatefulFlow", match, nsh, outPort)) {
+                		LOG.error("createdServiceFunctionClassifier: out flow is null\n");
+                		continue;
+                	}
+                	if (!SfcScfOfUtils.createClassifierGoToSaveState(nodeName, "classifierGoToStateful", match, nsh, outPort)) {
+                		LOG.error("createdServiceFunctionClassifier: out flow is null\n");
+                		continue;
+                	}
+                	SfcScfOfUtils.initClassifierSaveFlowStateTable(nodeName);
+                	SfcScfOfUtils.initClassifierRestoreFlowStateTable(nodeName);
+                }
+                
+                StringBuffer sb1 = new StringBuffer();
+                sb1.append(nodeName).append(":");
+                sb1.append(String.valueOf(1L));
+                NodeConnectorId port1 = new NodeConnectorId(sb1.toString());
+                Match matchPort1 = new SfcScfMatch()
+                		.setPortMatch(port1)
+                		.setAclMatch(ace.getMatches())
+                		.build();
+                
+                //
                 StringBuffer key = new StringBuffer();
                 key.append(scf.getName()).append(aclName).append(ruleName).append(".out");
-                if (!SfcScfOfUtils.createClassifierOutFlow(nodeName, key.toString(), match, nsh, outPort)) {
+                if (!SfcScfOfUtils.createClassifierOutFlow(nodeName, key.toString(), matchPort1, nsh, outPort)) {
                     LOG.error("createdServiceFunctionClassifier: out flow is null\n");
                     continue;
                 }
@@ -198,8 +232,16 @@ public class SfcScfOfProcessor {
                 } else {
                     key = new StringBuffer();
                     key.append(scf.getName()).append(aclName).append(ruleName).append(".in");
-                    if (!SfcScfOfUtils.createClassifierInFlow(nodeName, key.toString(), reverseNsh, inPort)) {
-                        LOG.error("createdServiceFunctionClassifier: fail to create in flow\n");
+                    // Flow-stateful
+                    if (true){
+                    	if (!SfcScfOfUtils.createClassifierInFlow(nodeName, key.toString(), reverseNsh, inPort)) {
+                    		LOG.error("createdServiceFunctionClassifier: fail to create in flow\n");
+                    	}
+                    }else{
+                    	
+                    	if (!SfcScfOfUtils.createClassifierInFlowStateful(nodeName, key.toString(), reverseNsh, inPort)) {
+                    		LOG.error("createdServiceFunctionClassifier: fail to create in flow\n");
+                    	}
                     }
 
                     SffName lastSffName = reverseNsh.getSffName();

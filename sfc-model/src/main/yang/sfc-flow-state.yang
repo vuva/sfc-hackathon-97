@@ -1,0 +1,22 @@
+// Contents of "sfc-flow-state"
+module sfc-flow-state {
+    namespace "urn:dcnssu:params:xml:ns:yang:sfc-flow-state";
+    prefix "sfc-flow-state";
+    description "";
+
+    revision 2016-10-08 {
+        description "Initial revision";
+    }
+
+    container sfc-flow-states {        list sfc-flow-state {
+            description "";
+            key id;            leaf id {
+                description "";
+                type int16;
+            }
+
+        }
+
+        description "";
+    }
+}
